@@ -317,6 +317,14 @@ private struct FullScreenTab: View {
                 Note("Yellow leaves full screen first, because macOS can't minimize a full screen window.")
                 Note("macOS can hide menu bar icons behind the notch when an app has a lot of menus.")
             }
+            Section {
+                Toggle("Skip the animation when switching Spaces", isOn: $store.settings.instantSpaceSwitching)
+                    .disabled(!InstantSpaces.isSupported)
+                Note("Switches to a window on another Space or in full screen straight away, using a fake trackpad swipe. Turn this off if the screen ever goes black or lands on the wrong Space.")
+                if !InstantSpaces.isSupported {
+                    Note("This needs macOS 27 or later.")
+                }
+            }
         }
         .formStyle(.grouped)
     }

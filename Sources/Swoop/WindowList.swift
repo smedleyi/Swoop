@@ -23,6 +23,8 @@ final class WindowList {
     var onChange: (() -> Void)?
     /// While the switcher is open, what it does doesn't count as using a window.
     var isFrozen = false
+    private var focusChangesIgnoredUntil = Date.distantPast
+    private var isTrackingFocus: Bool { !isFrozen && Date() >= focusChangesIgnoredUntil }
 
     private(set) var byID = [CGWindowID: WindowItem]()
     private(set) var spaceOrder = [UInt64]()
@@ -106,7 +108,7 @@ final class WindowList {
     /// Called for changes an app reports, on the main thread.
     fileprivate func handleEvent(_ element: AXUIElement, _ notification: String) {
         if notification == kAXFocusedWindowChangedNotification {
-            if !isFrozen, let id = PrivateAPI.windowID(of: element) { recency.touch(id) }
+            if isTrackingFocus, let id = PrivateAPI.windowID(of: element) { recency.touch(id) }
             return
         }
         pendingRefresh?.cancel()
@@ -120,7 +122,7 @@ final class WindowList {
         queue.async { [weak self] in
             guard let id = Self.focusedWindowID(pid: pid, timeout: Self.elementTimeout) else { return }
             DispatchQueue.main.async {
-                guard let self, !self.isFrozen else { return }
+                guard let self, self.isTrackingFocus else { return }
                 self.recency.touch(id)
             }
         }
@@ -132,6 +134,11 @@ final class WindowList {
         guard let id = focusedWindowID(), byID[id] != nil else { return nil }
         recency.touch(id)
         return id
+    }
+
+    /// For while a slide between Spaces moves focus through windows nobody chose.
+    func ignoreFocusChanges(until date: Date) {
+        focusChangesIgnoredUntil = date
     }
 
     func noteSwitched(to id: CGWindowID) {
@@ -173,7 +180,7 @@ final class WindowList {
         byID = snapshot.items
         spaceOrder = snapshot.spaceOrder
         recency.reconcile(with: snapshot.frontToBack)
-        if !isFrozen, let focused = snapshot.focused, byID[focused] != nil {
+        if isTrackingFocus, let focused = snapshot.focused, byID[focused] != nil {
             recency.touch(focused)
         }
         isRefreshing = false

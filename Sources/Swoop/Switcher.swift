@@ -24,6 +24,18 @@ final class Switcher {
     private var sessionOrder = [CGWindowID]()
     private static let focusCheckDelay: TimeInterval = 0.5
     private static let focusRetries = 3
+    private let focusQueue = DispatchQueue(label: "com.isaac.swoop.focus", qos: .userInteractive)
+    private var pendingFocus: DispatchWorkItem?
+    private var focusConfirmation: DispatchWorkItem?
+    /// Measured on macOS 27: a slide takes about 0.4s, then macOS picks the front app.
+    private static let spaceSlideDuration: TimeInterval = 0.5
+    private static let slideSettleMargin: TimeInterval = 0.1
+    private static let jumpArrivalLimit: TimeInterval = 0.3
+    private static let jumpLandingLimit: TimeInterval = 1
+    private var jumpLanding: (space: UInt64, at: Date)?
+    private var slideEnds: Date?
+    private var heldFocus: DispatchWorkItem?
+    private var destination: WindowItem?
     /// The state of the Mac when the switcher opened.
     private var sessionContext = ArrangementContext()
     private var capturedIDs = Set<CGWindowID>()
@@ -240,7 +252,8 @@ final class Switcher {
     // MARK: - Session
 
     private func open(scope: WindowScope, hold: CGEventFlags, nextKey: Int, reversed: Bool, gesture: Bool) {
-        let focused = WindowList.shared.noteFocusedWindow()
+        focusConfirmation?.cancel()
+        let focused = isHeadingSomewhere ? destination?.id : WindowList.shared.noteFocusedWindow()
         WindowList.shared.isFrozen = true
 
         self.scope = scope
@@ -384,28 +397,98 @@ final class Switcher {
         guard let chosen else { return }
         WindowList.shared.noteSwitched(to: chosen.id)
         moveCursor(to: chosen)
-        let origin = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        DispatchQueue.global(qos: .userInteractive).async {
-            chosen.focus()
+        requestFocus(chosen)
+    }
+
+    /// When a slide to another Space ends, macOS brings forward whichever app is on that
+    /// Space, undoing any switch made during the slide. So a switch made during one waits
+    /// for the end, and only the latest of them goes ahead.
+    private func requestFocus(_ item: WindowItem) {
+        focusConfirmation?.cancel()
+        heldFocus?.cancel()
+        heldFocus = nil
+        destination = item
+        guard let ends = slideEnds, ends > Date() else { return startFocus(item) }
+        let held = DispatchWorkItem { [weak self] in self?.startFocus(item) }
+        heldFocus = held
+        DispatchQueue.main.asyncAfter(deadline: .now() + ends.timeIntervalSinceNow, execute: held)
+    }
+
+    private func startFocus(_ item: WindowItem) {
+        heldFocus = nil
+        slideEnds = nil
+        var jump: (space: UInt64, steps: Int, right: Bool)?
+        if item.element != nil, let space = Self.otherSpace(of: item.id) {
+            jump = instantJump(to: space)
+            let duration = jump.map { InstantSpaces.durationPerSpace * Double($0.steps) } ?? Self.spaceSlideDuration
+            let ends = Date().addingTimeInterval(duration)
+            slideEnds = ends
+            WindowList.shared.ignoreFocusChanges(until: ends.addingTimeInterval(Self.slideSettleMargin))
         }
+        let origin = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        // An app too busy to answer shouldn't leave a line of old switches behind it.
+        pendingFocus?.cancel()
+        let work = DispatchWorkItem {
+            if let jump, InstantSpaces.jump(steps: jump.steps, right: jump.right) {
+                Self.waitToArrive(at: jump.space)
+            }
+            item.focus()
+        }
+        pendingFocus = work
+        focusQueue.async(execute: work)
         // Going to another app can't be told apart from staying, inside the same one.
-        if chosen.facts.pid != origin {
-            confirmFocus(of: chosen, from: origin, attemptsLeft: Self.focusRetries)
+        if item.facts.pid != origin {
+            confirmFocus(of: item, from: origin, attemptsLeft: Self.focusRetries)
         }
     }
 
+    /// The route is worked out from the Space showing, so a jump can't start while another
+    /// is still landing: being off by one could mean swiping past the last Space.
+    private func instantJump(to space: UInt64) -> (space: UInt64, steps: Int, right: Bool)? {
+        guard settings.instantSpaceSwitching, InstantSpaces.isSupported else { return nil }
+        if let landing = jumpLanding, landing.at > Date(),
+           !PrivateAPI.spaceLayout().visible.contains(landing.space) {
+            return nil
+        }
+        guard let route = InstantSpaces.route(to: space) else { return nil }
+        jumpLanding = (space, Date().addingTimeInterval(Self.jumpLandingLimit))
+        return (space, route.steps, route.right)
+    }
+
+    /// Focusing a window on another Space starts the normal animation, so this comes first.
+    private static func waitToArrive(at space: UInt64) {
+        let deadline = Date().addingTimeInterval(jumpArrivalLimit)
+        while Date() < deadline, !PrivateAPI.spaceLayout().visible.contains(space) {
+            usleep(5_000)
+        }
+    }
+
+    /// The Space to go to, if the window isn't on one showing already.
+    private static func otherSpace(of id: CGWindowID) -> UInt64? {
+        guard let spaces = PrivateAPI.spaces(of: id), let first = spaces.first else { return nil }
+        let visible = PrivateAPI.spaceLayout().visible
+        return spaces.contains { visible.contains($0) } ? nil : first
+    }
+
+    /// Mid-slide, the app in front is the one being left or passed through, not where
+    /// the last switch is heading.
+    private var isHeadingSomewhere: Bool {
+        heldFocus != nil || (slideEnds.map { $0 > Date() } ?? false)
+    }
+
     /// macOS sometimes drops a switch, more or less silently, so it's asked again until the
-    /// app comes forward. Anything else having come forward means you've moved on.
+    /// app comes forward. Anything else having come forward means you've moved on, as does
+    /// opening the switcher again: the original app can be in front because you went back.
     private func confirmFocus(of item: WindowItem, from origin: pid_t?, attemptsLeft: Int) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.focusCheckDelay) { [weak self] in
+        let check = DispatchWorkItem { [weak self] in
             guard let self, !self.isOpen, attemptsLeft > 0,
                   NSWorkspace.shared.frontmostApplication?.processIdentifier == origin
             else { return }
-            DispatchQueue.global(qos: .userInteractive).async {
-                item.refocus()
-            }
+            self.focusQueue.async { item.refocus() }
             self.confirmFocus(of: item, from: origin, attemptsLeft: attemptsLeft - 1)
         }
+        focusConfirmation = check
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.focusCheckDelay, execute: check)
     }
 
     private func moveCursor(to item: WindowItem) {

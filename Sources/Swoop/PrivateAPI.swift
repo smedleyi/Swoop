@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationServices
 import CoreGraphics
 import Darwin
@@ -141,6 +142,27 @@ enum PrivateAPI {
             }
         }
         return (ordered, visible)
+    }
+
+    /// The Spaces of the display under a point in AppKit's coordinates. With "Displays have
+    /// separate Spaces" off, there's one list and it isn't named after any display.
+    static func spaceDisplay(underPointer point: CGPoint) -> (ordered: [UInt64], current: UInt64)? {
+        guard let copyDisplaySpaces, let mainConnection,
+              let displays = copyDisplaySpaces(mainConnection())?.takeRetainedValue() as? [[String: Any]]
+        else { return nil }
+        var chosen = displays.count == 1 ? displays.first : nil
+        if chosen == nil,
+           let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }),
+           let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+           let uuid = CGDisplayCreateUUIDFromDisplayID(number.uint32Value)?.takeRetainedValue(),
+           let name = CFUUIDCreateString(nil, uuid) as String? {
+            chosen = displays.first { ($0["Display Identifier"] as? String) == name }
+        }
+        guard let chosen,
+              let current = (chosen["Current Space"] as? [String: Any])?["id64"] as? NSNumber
+        else { return nil }
+        let ordered = (chosen["Spaces"] as? [[String: Any]] ?? []).compactMap { ($0["id64"] as? NSNumber)?.uint64Value }
+        return (ordered, current.uint64Value)
     }
 
     // MARK: - Focus

@@ -224,6 +224,7 @@ do {
     check(keys.close == KeyCode.w, "missing keys use defaults")
     let fresh = Settings()
     check(!fresh.fullScreenMenuBarButtons, "the full screen menu bar buttons start off")
+    check(fresh.instantSpaceSwitching, "switching between Spaces is instant by default")
     check(fresh.mouseHover, "hovering selects by default")
     check(fresh.showCloseButton && !fresh.showMinimizeButton && !fresh.showFullscreenButton, "only the X is on by default")
     let hidden = try! JSONDecoder().decode(Settings.self, from: Data(#"{"hideCircles":true}"#.utf8))

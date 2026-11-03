@@ -32,6 +32,8 @@ Thumbnails, app icons or titles; four sizes; light, dark or system theme; which 
 
 Settings > Full Screen can show the red, yellow and green window buttons in the menu bar while the front window is in full screen. Yellow leaves full screen first, because macOS can't minimize a full screen window.
 
+Switching to a window on another Space or in full screen also skips the animation on macOS 27, using a method from [InstantSpaceSwitcher](https://github.com/jurplel/InstantSpaceSwitcher) (MIT). It's undocumented, so it can be turned off in the same tab.
+
 ## Exceptions
 
 Per app, by bundle ID: hide it from the switcher (always, when it has no windows, or by title), or let it keep the shortcuts (always, or when full screen, which is the default for remote desktops and VMs).
