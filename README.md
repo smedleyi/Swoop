@@ -28,6 +28,10 @@ All of these can be rebound or unassigned, and a separate key for going backward
 
 Thumbnails, app icons or titles; four sizes; light, dark or system theme; which screen it appears on; what titles show and where they're shortened; a full-size preview of the selected window; and whether tiles show buttons, status icons and Space numbers.
 
+## Full Screen
+
+Settings > Full Screen can show the red, yellow and green window buttons in the menu bar while the front window is in full screen. Yellow leaves full screen first, because macOS can't minimize a full screen window.
+
 ## Exceptions
 
 Per app, by bundle ID: hide it from the switcher (always, when it has no windows, or by title), or let it keep the shortcuts (always, or when full screen, which is the default for remote desktops and VMs).

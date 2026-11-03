@@ -358,6 +358,7 @@ public struct Settings: Codable, Equatable {
     public var fadeOut = false
 
     public var menuBarIconShown = true
+    public var fullScreenMenuBarButtons = false
     public var exceptions: [AppException] = Settings.defaultExceptions
 
     private enum LegacyKeys: String, CodingKey {
@@ -396,6 +397,7 @@ public struct Settings: Codable, Equatable {
         try c.fill(&previewSelected, .previewSelected)
         try c.fill(&fadeOut, .fadeOut)
         try c.fill(&menuBarIconShown, .menuBarIconShown)
+        try c.fill(&fullScreenMenuBarButtons, .fullScreenMenuBarButtons)
         try c.fill(&exceptions, .exceptions)
     }
 

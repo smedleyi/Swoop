@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         SettingsStore.shared.onChange = { [weak self] in
             Switcher.shared.applySettings()
+            FullScreenButtons.shared.applySettings()
             self?.updateMenuBar()
         }
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
@@ -43,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func begin() {
         Switcher.shared.start()
+        FullScreenButtons.shared.start()
         setStatus("Running")
         // Previews are optional, so this is the only time Swoop asks. Denying it
         // leaves app icons on the tiles.

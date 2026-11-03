@@ -31,10 +31,14 @@ final class WindowList {
     private var isRefreshing = false
     private var needsAnotherRefresh = false
 
-    // Only touched on `queue`. Elements found by scanning, and the windows already
-    // scanned for, so a window that never turns up isn't searched for every time.
-    private var scannedElements = [CGWindowID: AXUIElement]()
-    private var scannedIDs = [pid_t: Set<CGWindowID>]()
+    // Only touched on `queue`. Every element seen, because an app only lists the windows
+    // on the current Space and these still work once a window has left it. Then the
+    // windows that have been searched for and not found, so one that never turns up isn't
+    // searched for every time, but a search that only failed because the app was busy, or
+    // the window was new, gets another go.
+    private var knownElements = [CGWindowID: AXUIElement]()
+    private var knownIDs = [pid_t: Set<CGWindowID>]()
+    private var missedScans = [CGWindowID: (attempts: Int, next: Date)]()
     // Also only touched on `queue`. What each app last reported, and who's being observed.
     private var lastItems = [CGWindowID: WindowItem]()
     private var observers = [pid_t: AXObserver]()
@@ -44,6 +48,8 @@ final class WindowList {
 
     private static let elementTimeout: Float = 0.25
     private static let scanBudget: TimeInterval = 0.25
+    private static let firstScanRetry: TimeInterval = 5
+    private static let longestScanRetry: TimeInterval = 300
     /// Keeps windowless apps' tile IDs clear of real window IDs.
     private static let windowlessIDBase: CGWindowID = 0x8000_0000
     /// Windows that open or close together only cause one refresh.
@@ -336,30 +342,39 @@ final class WindowList {
         for window in value as? [AXUIElement] ?? [] {
             if let id = PrivateAPI.windowID(of: window), candidates.contains(id) {
                 found[id] = window
+                knownElements[id] = window
             }
         }
-
         for id in candidates where found[id] == nil {
-            if let cached = scannedElements[id] { found[id] = cached }
+            if let known = knownElements[id] { found[id] = known }
         }
-        // Forget elements of windows that have closed.
-        let wasScanned = scannedIDs[pid] ?? []
-        for id in wasScanned.subtracting(candidates) { scannedElements[id] = nil }
 
-        let unexplained = candidates.subtracting(found.keys)
-        let unscanned = unexplained.subtracting(wasScanned)
-        scannedIDs[pid] = wasScanned.union(unexplained).intersection(candidates)
-        if !unscanned.isEmpty {
-            var remaining = unscanned
+        // Forget windows that have closed.
+        for id in (knownIDs[pid] ?? []).subtracting(candidates) {
+            knownElements[id] = nil
+            missedScans[id] = nil
+        }
+        knownIDs[pid] = candidates
+
+        let now = Date()
+        let due = candidates.subtracting(found.keys).filter { (missedScans[$0]?.next ?? now) <= now }
+        if !due.isEmpty {
+            var remaining = due
             PrivateAPI.scanElements(pid: pid, budget: Self.scanBudget) { element in
                 AXUIElementSetMessagingTimeout(element, Self.elementTimeout)
                 guard let id = PrivateAPI.windowID(of: element), remaining.contains(id),
                       axValue(element, kAXRoleAttribute) == kAXWindowRole as String
                 else { return false }
                 found[id] = element
-                scannedElements[id] = element
+                knownElements[id] = element
+                missedScans[id] = nil
                 remaining.remove(id)
                 return remaining.isEmpty
+            }
+            for id in remaining {
+                let attempts = (missedScans[id]?.attempts ?? 0) + 1
+                let wait = min(Self.firstScanRetry * pow(2, Double(attempts - 1)), Self.longestScanRetry)
+                missedScans[id] = (attempts, now.addingTimeInterval(wait))
             }
         }
         return found
@@ -450,6 +465,75 @@ private func axElement(_ element: AXUIElement, _ attribute: String) -> AXUIEleme
     return (value as! AXUIElement)
 }
 
+private func pressCloseButton(of element: AXUIElement) {
+    guard let button = axElement(element, kAXCloseButtonAttribute) else {
+        NSSound.beep()
+        return
+    }
+    AXUIElementPerformAction(button, kAXPressAction as CFString)
+}
+
+/// An app's focused window while it's in full screen, looked up fresh each time.
+struct FullscreenWindow {
+    private static let timeout: Float = 0.25
+    private static let exitPollInterval: TimeInterval = 0.2
+    private static let exitPollAttempts = 25
+    /// The window says it has left full screen before the animation ends, and macOS
+    /// brings back a window minimized before then.
+    private static let exitAnimationDelay: TimeInterval = 1
+    private static let minimizeRetryDelay: TimeInterval = 0.5
+    private static let minimizeAttempts = 3
+
+    private let element: AXUIElement
+
+    static func focused(pid: pid_t) -> FullscreenWindow? {
+        guard let element = axElement(axApp(pid, timeout: timeout), kAXFocusedWindowAttribute) else { return nil }
+        AXUIElementSetMessagingTimeout(element, timeout)
+        guard axValue(element, axFullScreenAttribute) == true else { return nil }
+        return FullscreenWindow(element: element)
+    }
+
+    static func isBusy(pid: pid_t) -> Bool {
+        axIsBusy(axApp(pid, timeout: timeout))
+    }
+
+    func close() {
+        pressCloseButton(of: element)
+    }
+
+    func exitFullscreen() {
+        AXUIElementSetAttributeValue(element, axFullScreenAttribute as CFString, kCFBooleanFalse)
+    }
+
+    func minimize(on queue: DispatchQueue) {
+        exitFullscreen()
+        minimizeAfterExit(on: queue, attemptsLeft: Self.exitPollAttempts)
+    }
+
+    private func minimizeAfterExit(on queue: DispatchQueue, attemptsLeft: Int) {
+        guard axValue(element, axFullScreenAttribute) == false else {
+            guard attemptsLeft > 1 else { return }
+            queue.asyncAfter(deadline: .now() + Self.exitPollInterval) {
+                minimizeAfterExit(on: queue, attemptsLeft: attemptsLeft - 1)
+            }
+            return
+        }
+        queue.asyncAfter(deadline: .now() + Self.exitAnimationDelay) {
+            keepMinimized(on: queue, attemptsLeft: Self.minimizeAttempts)
+        }
+    }
+
+    private func keepMinimized(on queue: DispatchQueue, attemptsLeft: Int) {
+        if axValue(element, kAXMinimizedAttribute) != true {
+            AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString, kCFBooleanTrue)
+        }
+        guard attemptsLeft > 1 else { return }
+        queue.asyncAfter(deadline: .now() + Self.minimizeRetryDelay) {
+            keepMinimized(on: queue, attemptsLeft: attemptsLeft - 1)
+        }
+    }
+}
+
 // MARK: - Acting on a window
 
 extension WindowItem {
@@ -483,13 +567,15 @@ extension WindowItem {
         AXUIElementPerformAction(element, kAXRaiseAction as CFString)
     }
 
+    /// For when `focus` didn't take, with the public way of asking as well.
+    func refocus() {
+        focus()
+        app?.activate()
+    }
+
     func close() {
         guard let element else { return }
-        guard let button = axElement(element, kAXCloseButtonAttribute) else {
-            NSSound.beep()
-            return
-        }
-        AXUIElementPerformAction(button, kAXPressAction as CFString)
+        pressCloseButton(of: element)
     }
 
     func toggleMinimized() {

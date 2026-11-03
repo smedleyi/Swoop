@@ -34,6 +34,7 @@ struct SettingsView: View {
             ShortcutsTab().tabItem { Text("Shortcuts") }
             KeysTab().tabItem { Text("Controls") }
             AppearanceTab().tabItem { Text("Appearance") }
+            FullScreenTab().tabItem { Text("Full Screen") }
             ExceptionsTab().tabItem { Text("Exceptions") }
             GeneralTab().tabItem { Text("General") }
         }
@@ -299,6 +300,22 @@ private struct AppearanceTab: View {
                             .frame(width: 60, alignment: .trailing)
                     }
                 }
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+private struct FullScreenTab: View {
+    @EnvironmentObject var store: SettingsStore
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Show window buttons in the menu bar", isOn: $store.settings.fullScreenMenuBarButtons)
+                Note("While the front window is in full screen, the red, yellow and green buttons appear beside your menu bar icons.")
+                Note("Yellow leaves full screen first, because macOS can't minimize a full screen window.")
+                Note("macOS can hide menu bar icons behind the notch when an app has a lot of menus.")
             }
         }
         .formStyle(.grouped)

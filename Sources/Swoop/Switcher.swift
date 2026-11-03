@@ -22,6 +22,8 @@ final class Switcher {
     /// Every window this session has shown, so one that drops out of a refresh and
     /// comes back returns to its old place instead of moving to the end.
     private var sessionOrder = [CGWindowID]()
+    private static let focusCheckDelay: TimeInterval = 0.5
+    private static let focusRetries = 3
     /// The state of the Mac when the switcher opened.
     private var sessionContext = ArrangementContext()
     private var capturedIDs = Set<CGWindowID>()
@@ -382,8 +384,27 @@ final class Switcher {
         guard let chosen else { return }
         WindowList.shared.noteSwitched(to: chosen.id)
         moveCursor(to: chosen)
+        let origin = NSWorkspace.shared.frontmostApplication?.processIdentifier
         DispatchQueue.global(qos: .userInteractive).async {
             chosen.focus()
+        }
+        // Going to another app can't be told apart from staying, inside the same one.
+        if chosen.facts.pid != origin {
+            confirmFocus(of: chosen, from: origin, attemptsLeft: Self.focusRetries)
+        }
+    }
+
+    /// macOS sometimes drops a switch, more or less silently, so it's asked again until the
+    /// app comes forward. Anything else having come forward means you've moved on.
+    private func confirmFocus(of item: WindowItem, from origin: pid_t?, attemptsLeft: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.focusCheckDelay) { [weak self] in
+            guard let self, !self.isOpen, attemptsLeft > 0,
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == origin
+            else { return }
+            DispatchQueue.global(qos: .userInteractive).async {
+                item.refocus()
+            }
+            self.confirmFocus(of: item, from: origin, attemptsLeft: attemptsLeft - 1)
         }
     }
 
