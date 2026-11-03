@@ -1,7 +1,20 @@
 #!/bin/bash
 set -e
 
-cd "$(dirname "${BASH_SOURCE[0]}")"
+REPO_URL="https://github.com/smedleyi/Swoop.git"
+
+# Running from a local checkout (e.g. `bash install.sh`) vs. piped via curl.
+# BASH_SOURCE[0] is a real file path in the former case and empty or not a file in
+# the latter, so the -f check naturally distinguishes them.
+if [ -f "${BASH_SOURCE[0]}" ] && [ -f "$(dirname "${BASH_SOURCE[0]}")/Package.swift" ]; then
+    cd "$(dirname "${BASH_SOURCE[0]}")"
+else
+    echo "Cloning Swoop..."
+    WORKDIR="$(mktemp -d)"
+    trap 'rm -rf "$WORKDIR"' EXIT
+    git clone --depth 1 "$REPO_URL" "$WORKDIR/Swoop"
+    cd "$WORKDIR/Swoop"
+fi
 
 echo "Building Swoop (release)..."
 swift build -c release

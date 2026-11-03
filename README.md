@@ -40,6 +40,14 @@ Per app, by bundle ID: hide it from the switcher (always, when it has no windows
 
 ## Install
 
+One line, which clones to a temporary folder, builds, installs and cleans up. It needs the Xcode command-line tools or a full Xcode install:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/smedleyi/Swoop/main/install.sh | bash
+```
+
+Or from a checkout:
+
 ```sh
 bash install.sh
 ```
